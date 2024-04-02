@@ -1,0 +1,122 @@
+commit cf070a0323eb6993a1207712e4c869b3444d1679
+Author: Domen Kožar <domen@dev.si>
+Date:   Wed Aug 16 10:51:55 2023 +0100
+
+    support .devenv.flake.nix and devenv.lock
+
+diff --git a/src/libexpr/flake/call-flake.nix b/src/libexpr/flake/call-flake.nix
+index 0edc43146..db4b6f830 100644
+--- a/src/libexpr/flake/call-flake.nix
++++ b/src/libexpr/flake/call-flake.nix
+@@ -70,7 +70,11 @@ let
+ 
+           outPath = sourceInfo + ((if subdir == "" then "" else "/") + subdir);
+ 
+-          flake = import (outPath + "/flake.nix");
++          file = if builtins.pathExists (outPath + "/.devenv.flake.nix")
++                 then "/.devenv.flake.nix"
++                 else "/flake.nix";
++
++          flake = import (outPath + file);
+ 
+           inputs = builtins.mapAttrs
+             (inputName: inputSpec: allNodes.${resolveInput inputSpec})
+diff --git a/src/libexpr/flake/flake.cc b/src/libexpr/flake/flake.cc
+index e37778603..d832a1113 100644
+--- a/src/libexpr/flake/flake.cc
++++ b/src/libexpr/flake/flake.cc
+@@ -178,7 +178,14 @@ static Flake readFlake(
+     const InputPath & lockRootPath)
+ {
+     CanonPath flakeDir(resolvedRef.subdir);
++
++    auto devEnvPath = rootDir / flakeDir / ".devenv.flake.nix";
+     auto flakePath = rootDir / flakeDir / "flake.nix";
++    if (devEnvPath.pathExists()) {
++      flakePath = devEnvPath;
++    } else if (!flakePath.pathExists()) {
++      throw Error("flake '%s' does not exist", devEnvPath);
++    }
+ 
+     Value vInfo;
+     state.evalFile(flakePath, vInfo, true);
+@@ -341,7 +348,7 @@ LockedFlake lockFlake(
+ 
+         auto oldLockFile = readLockFile(
+             lockFlags.referenceLockFilePath.value_or(
+-                flake->lockFilePath()));
++                flake->path.parent() + "devenv.lock"));
+ 
+         debug("old lock file: %s", oldLockFile);
+ 
+diff --git a/src/libexpr/flake/flake.hh b/src/libexpr/flake/flake.hh
+index d45382a63..d1c698954 100644
+--- a/src/libexpr/flake/flake.hh
++++ b/src/libexpr/flake/flake.hh
+@@ -97,7 +97,7 @@ struct Flake
+ 
+     SourcePath lockFilePath()
+     {
+-        return path.parent() / "flake.lock";
++        return path.parent() / "devenv.lock";
+     }
+ };
+ 
+diff --git a/src/libexpr/flake/flakeref.cc b/src/libexpr/flake/flakeref.cc
+index 78537d181..4e214c05c 100644
+--- a/src/libexpr/flake/flakeref.cc
++++ b/src/libexpr/flake/flakeref.cc
+@@ -117,18 +117,18 @@ std::pair<FlakeRef, std::string> parsePathFlakeRefWithFragment(
+ 
+         if (isFlake) {
+ 
+-            if (!allowMissing && !pathExists(path + "/flake.nix")){
+-                notice("path '%s' does not contain a 'flake.nix', searching up",path);
++            if (!allowMissing && !pathExists(path + "/.devenv.flake.nix")){
++                notice("path '%s' does not contain a '.devenv.flake.nix', searching up",path);
+ 
+                 // Save device to detect filesystem boundary
+                 dev_t device = lstat(path).st_dev;
+                 bool found = false;
+                 while (path != "/") {
+-                    if (pathExists(path + "/flake.nix")) {
++                    if (pathExists(path + "/.devenv.flake.nix")) {
+                         found = true;
+                         break;
+                     } else if (pathExists(path + "/.git"))
+-                        throw Error("path '%s' is not part of a flake (neither it nor its parent directories contain a 'flake.nix' file)", path);
++                        throw Error("path '%s' is not part of a flake (neither it nor its parent directories contain a '.devenv.flake.nix' file)", path);
+                     else {
+                         if (lstat(path).st_dev != device)
+                             throw Error("unable to find a flake before encountering filesystem boundary at '%s'", path);
+@@ -136,14 +136,14 @@ std::pair<FlakeRef, std::string> parsePathFlakeRefWithFragment(
+                     path = dirOf(path);
+                 }
+                 if (!found)
+-                    throw BadURL("could not find a flake.nix file");
++                    throw BadURL("could not find a .devenv.flake.nix file");
+             }
+ 
+             if (!S_ISDIR(lstat(path).st_mode))
+                 throw BadURL("path '%s' is not a flake (because it's not a directory)", path);
+ 
+-            if (!allowMissing && !pathExists(path + "/flake.nix"))
+-                throw BadURL("path '%s' is not a flake (because it doesn't contain a 'flake.nix' file)", path);
++            if (!allowMissing && !pathExists(path + "/.devenv.flake.nix"))
++                throw BadURL("path '%s' is not a flake (because it doesn't contain a '.devenv.flake.nix' file)", path);
+ 
+             auto flakeRoot = path;
+             std::string subdir;
+diff --git a/src/libfetchers/git-utils.cc b/src/libfetchers/git-utils.cc
+index e874011e3..881b3c934 100644
+--- a/src/libfetchers/git-utils.cc
++++ b/src/libfetchers/git-utils.cc
+@@ -304,7 +304,7 @@ struct GitRepoImpl : GitRepo, std::enable_shared_from_this<GitRepoImpl>
+ 
+         // Usually ignored, so add it manually
+         if (pathExists(".devenv.flake.nix")) {
+-            info.files.insert(CanonPath(path));
++            info.files.insert(CanonPath(".devenv.flake.nix"));
+         }
+         return info;
+     }

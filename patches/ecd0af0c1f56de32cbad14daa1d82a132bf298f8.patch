@@ -1,0 +1,24 @@
+commit ecd0af0c1f56de32cbad14daa1d82a132bf298f8
+Author: Graham Dennis <gdennis@anduril.com>
+Date:   Wed Feb 21 18:40:34 2024 +1100
+
+    Faster flake.lock parsing
+    
+    This PR reduces the creation of short-lived basic_json objects while
+    parsing flake.lock files. For large flake.lock files (~1.5MB) I was
+    observing ~60s being spent for trivial nix build operations while
+    after this change it is now taking ~1.6s.
+
+diff --git a/src/libexpr/flake/lockfile.cc b/src/libexpr/flake/lockfile.cc
+index f5f99379f..a3c4e9360 100644
+--- a/src/libexpr/flake/lockfile.cc
++++ b/src/libexpr/flake/lockfile.cc
+@@ -109,7 +109,7 @@ LockFile::LockFile(std::string_view contents, std::string_view path)
+                 std::string inputKey = i.value();
+                 auto k = nodeMap.find(inputKey);
+                 if (k == nodeMap.end()) {
+-                    auto nodes = json["nodes"];
++                    auto & nodes = json["nodes"];
+                     auto jsonNode2 = nodes.find(inputKey);
+                     if (jsonNode2 == nodes.end())
+                         throw Error("lock file references missing node '%s'", inputKey);

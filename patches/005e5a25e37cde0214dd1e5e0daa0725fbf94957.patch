@@ -1,0 +1,65 @@
+commit 005e5a25e37cde0214dd1e5e0daa0725fbf94957
+Author: Domen Kožar <domen@dev.si>
+Date:   Fri Feb 16 04:48:50 2024 +0000
+
+    flake.nix: remove libgit2 src override
+
+diff --git a/flake.lock b/flake.lock
+index f0efb4036..5b75833db 100644
+--- a/flake.lock
++++ b/flake.lock
+@@ -16,22 +16,6 @@
+         "type": "github"
+       }
+     },
+-    "libgit2": {
+-      "flake": false,
+-      "locked": {
+-        "lastModified": 1697646580,
+-        "narHash": "sha256-oX4Z3S9WtJlwvj0uH9HlYcWv+x1hqp8mhXl7HsLu2f0=",
+-        "owner": "libgit2",
+-        "repo": "libgit2",
+-        "rev": "45fd9ed7ae1a9b74b957ef4f337bc3c8b3df01b5",
+-        "type": "github"
+-      },
+-      "original": {
+-        "owner": "libgit2",
+-        "repo": "libgit2",
+-        "type": "github"
+-      }
+-    },
+     "nixpkgs": {
+       "locked": {
+         "lastModified": 1705033721,
+@@ -67,7 +51,6 @@
+     "root": {
+       "inputs": {
+         "flake-compat": "flake-compat",
+-        "libgit2": "libgit2",
+         "nixpkgs": "nixpkgs",
+         "nixpkgs-regression": "nixpkgs-regression"
+       }
+diff --git a/flake.nix b/flake.nix
+index 0bc70768e..62600d760 100644
+--- a/flake.nix
++++ b/flake.nix
+@@ -4,9 +4,8 @@
+   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-23.05-small";
+   inputs.nixpkgs-regression.url = "github:NixOS/nixpkgs/215d4d0fd80ca5163643b03a33fde804a29cc1e2";
+   inputs.flake-compat = { url = "github:edolstra/flake-compat"; flake = false; };
+-  inputs.libgit2 = { url = "github:libgit2/libgit2"; flake = false; };
+ 
+-  outputs = { self, nixpkgs, nixpkgs-regression, libgit2, ... }:
++  outputs = { self, nixpkgs, nixpkgs-regression, ... }:
+ 
+     let
+       inherit (nixpkgs) lib;
+@@ -153,8 +152,6 @@
+           };
+ 
+           libgit2-nix = final.libgit2.overrideAttrs (attrs: {
+-            src = libgit2;
+-            version = libgit2.lastModifiedDate;
+             cmakeFlags = attrs.cmakeFlags or []
+               ++ [ "-DUSE_SSH=exec" ];
+           });

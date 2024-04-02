@@ -1,0 +1,23 @@
+commit 0705f3b8a4a018ee54f1f2a3716724f32da05284
+Author: Domen Kožar <domen@dev.si>
+Date:   Thu Aug 24 17:50:18 2023 +0100
+
+    include devenv.local.nix and .env
+
+diff --git a/src/libfetchers/git-utils.cc b/src/libfetchers/git-utils.cc
+index 0d564bb85..0d514456f 100644
+--- a/src/libfetchers/git-utils.cc
++++ b/src/libfetchers/git-utils.cc
+@@ -308,6 +308,12 @@ struct GitRepoImpl : GitRepo, std::enable_shared_from_this<GitRepoImpl>
+             info.files.insert(CanonPath::fromCwd(".devenv/flake.json").removePrefix(path).rel());
+             info.files.insert(CanonPath::fromCwd(".devenv/devenv.json").removePrefix(path).rel());
+         }
++        if (pathExists(CanonPath::fromCwd("devenv.local.nix").abs())) {
++            info.files.insert(CanonPath::fromCwd("devenv.local.nix").removePrefix(path).rel());
++        }
++        if (pathExists(CanonPath::fromCwd(".env").abs())) {
++            info.files.insert(CanonPath::fromCwd(".env").removePrefix(path).rel());
++        }
+ 
+         return info;
+     }

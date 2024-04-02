@@ -1,0 +1,30 @@
+commit 138a98698dc76ea207c746f82db50eac70255755
+Author: Domen Kožar <domen@dev.si>
+Date:   Wed Aug 16 10:13:47 2023 +0100
+
+    support .devenv.flake.nix using git 2, include git untracked files
+
+diff --git a/src/libfetchers/git-utils.cc b/src/libfetchers/git-utils.cc
+index 2998575ff..e874011e3 100644
+--- a/src/libfetchers/git-utils.cc
++++ b/src/libfetchers/git-utils.cc
+@@ -291,6 +291,8 @@ struct GitRepoImpl : GitRepo, std::enable_shared_from_this<GitRepoImpl>
+ 
+         git_status_options options = GIT_STATUS_OPTIONS_INIT;
+         options.flags |= GIT_STATUS_OPT_INCLUDE_UNMODIFIED;
++        options.flags |= GIT_STATUS_OPT_INCLUDE_UNTRACKED;
++        options.flags |= GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS;
+         options.flags |= GIT_STATUS_OPT_EXCLUDE_SUBMODULES;
+         if (git_status_foreach_ext(*this, &options, &statusCallbackTrampoline, &statusCallback))
+             throw Error("getting working directory status: %s", git_error_last()->message);
+@@ -300,6 +302,10 @@ struct GitRepoImpl : GitRepo, std::enable_shared_from_this<GitRepoImpl>
+         if (pathExists(modulesFile))
+             info.submodules = parseSubmodules(modulesFile);
+ 
++        // Usually ignored, so add it manually
++        if (pathExists(".devenv.flake.nix")) {
++            info.files.insert(CanonPath(path));
++        }
+         return info;
+     }
+ 

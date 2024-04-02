@@ -1,0 +1,182 @@
+commit edecf0fc431c7624583456dc88d9ac6a638fcf4c
+Author: Alois Wohlschlager <alois1@gmx-topmail.de>
+Date:   Sat Feb 10 20:56:54 2024 +0100
+
+    Restore `builtins.pathExists` behavior on broken symlinks
+    
+    Commit 83c067c0fa0cc5a2dca440e5c986afe40b163802 changed `builtins.pathExists`
+    to resolve symlinks before checking for existence. Consequently, if the path
+    refers to a symlink itself, existence of the target of the symlink (instead of
+    the symlink itself) was checked. Restore the previous behavior by skipping
+    symlink resolution in the last component.
+    
+    (cherry picked from commit 89e21ab4bd1561c6eab2eeb63088f4e34fa4059f)
+
+diff --git a/src/libexpr/primops.cc b/src/libexpr/primops.cc
+index 00ec6c877..328304ba3 100644
+--- a/src/libexpr/primops.cc
++++ b/src/libexpr/primops.cc
+@@ -115,7 +115,7 @@ StringMap EvalState::realiseContext(const NixStringContext & context)
+     return res;
+ }
+ 
+-static SourcePath realisePath(EvalState & state, const PosIdx pos, Value & v, bool resolveSymlinks = true)
++static SourcePath realisePath(EvalState & state, const PosIdx pos, Value & v, std::optional<SymlinkResolution> resolveSymlinks = SymlinkResolution::Full)
+ {
+     NixStringContext context;
+ 
+@@ -127,7 +127,7 @@ static SourcePath realisePath(EvalState & state, const PosIdx pos, Value & v, bo
+             auto realPath = state.toRealPath(rewriteStrings(path.path.abs(), rewrites), context);
+             path = {path.accessor, CanonPath(realPath)};
+         }
+-        return resolveSymlinks ? path.resolveSymlinks() : path;
++        return resolveSymlinks ? path.resolveSymlinks(*resolveSymlinks) : path;
+     } catch (Error & e) {
+         e.addTrace(state.positions[pos], "while realising the context of path '%s'", path);
+         throw;
+@@ -167,7 +167,7 @@ static void mkOutputString(
+    argument. */
+ static void import(EvalState & state, const PosIdx pos, Value & vPath, Value * vScope, Value & v)
+ {
+-    auto path = realisePath(state, pos, vPath, false);
++    auto path = realisePath(state, pos, vPath, std::nullopt);
+     auto path2 = path.path.abs();
+ 
+ #if 0
+@@ -1529,13 +1529,16 @@ static void prim_pathExists(EvalState & state, const PosIdx pos, Value * * args,
+     try {
+         auto & arg = *args[0];
+ 
+-        auto path = realisePath(state, pos, arg);
+-
+         /* SourcePath doesn't know about trailing slash. */
++        state.forceValue(arg, pos);
+         auto mustBeDir = arg.type() == nString
+             && (arg.string_view().ends_with("/")
+                 || arg.string_view().ends_with("/."));
+ 
++        auto symlinkResolution =
++            mustBeDir ? SymlinkResolution::Full : SymlinkResolution::Ancestors;
++        auto path = realisePath(state, pos, arg, symlinkResolution);
++
+         auto st = path.maybeLstat();
+         auto exists = st && (!mustBeDir || st->type == SourceAccessor::tDirectory);
+         v.mkBool(exists);
+@@ -1774,7 +1777,7 @@ static std::string_view fileTypeToString(InputAccessor::Type type)
+ 
+ static void prim_readFileType(EvalState & state, const PosIdx pos, Value * * args, Value & v)
+ {
+-    auto path = realisePath(state, pos, *args[0], false);
++    auto path = realisePath(state, pos, *args[0], std::nullopt);
+     /* Retrieve the directory entry type and stringize it. */
+     v.mkString(fileTypeToString(path.lstat().type));
+ }
+diff --git a/src/libutil/source-path.cc b/src/libutil/source-path.cc
+index 0f154e779..56ae1d699 100644
+--- a/src/libutil/source-path.cc
++++ b/src/libutil/source-path.cc
+@@ -62,7 +62,7 @@ bool SourcePath::operator<(const SourcePath & x) const
+     return std::tie(*accessor, path) < std::tie(*x.accessor, x.path);
+ }
+ 
+-SourcePath SourcePath::resolveSymlinks() const
++SourcePath SourcePath::resolveSymlinks(SymlinkResolution mode) const
+ {
+     auto res = SourcePath(accessor);
+ 
+@@ -72,6 +72,8 @@ SourcePath SourcePath::resolveSymlinks() const
+     for (auto & c : path)
+         todo.push_back(std::string(c));
+ 
++    bool resolve_last = mode == SymlinkResolution::Full;
++
+     while (!todo.empty()) {
+         auto c = *todo.begin();
+         todo.pop_front();
+@@ -81,14 +83,16 @@ SourcePath SourcePath::resolveSymlinks() const
+             res.path.pop();
+         else {
+             res.path.push(c);
+-            if (auto st = res.maybeLstat(); st && st->type == InputAccessor::tSymlink) {
+-                if (!linksAllowed--)
+-                    throw Error("infinite symlink recursion in path '%s'", path);
+-                auto target = res.readLink();
+-                res.path.pop();
+-                if (hasPrefix(target, "/"))
+-                    res.path = CanonPath::root;
+-                todo.splice(todo.begin(), tokenizeString<std::list<std::string>>(target, "/"));
++            if (resolve_last || !todo.empty()) {
++                if (auto st = res.maybeLstat(); st && st->type == InputAccessor::tSymlink) {
++                    if (!linksAllowed--)
++                        throw Error("infinite symlink recursion in path '%s'", path);
++                    auto target = res.readLink();
++                    res.path.pop();
++                    if (hasPrefix(target, "/"))
++                        res.path = CanonPath::root;
++                    todo.splice(todo.begin(), tokenizeString<std::list<std::string>>(target, "/"));
++                }
+             }
+         }
+     }
+diff --git a/src/libutil/source-path.hh b/src/libutil/source-path.hh
+index a2f4ddd1e..fae0890f2 100644
+--- a/src/libutil/source-path.hh
++++ b/src/libutil/source-path.hh
+@@ -11,6 +11,22 @@
+ 
+ namespace nix {
+ 
++enum class SymlinkResolution {
++    /**
++     * Resolve symlinks in the ancestors only.
++     *
++     * Only the last component of the result is possibly a symlink.
++     */
++    Ancestors,
++
++    /**
++     * Resolve symlinks fully, realpath(3)-style.
++     *
++     * No component of the result will be a symlink.
++     */
++    Full,
++};
++
+ /**
+  * An abstraction for accessing source files during
+  * evaluation. Currently, it's just a wrapper around `CanonPath` that
+@@ -103,11 +119,11 @@ struct SourcePath
+     bool operator<(const SourcePath & x) const;
+ 
+     /**
+-     * Resolve any symlinks in this `SourcePath` (including its
+-     * parents). The result is a `SourcePath` in which no element is a
+-     * symlink.
++     * Resolve any symlinks in this `SourcePath` according to the
++     * given resolution mode.
+      */
+-    SourcePath resolveSymlinks() const;
++    SourcePath resolveSymlinks(
++        SymlinkResolution mode = SymlinkResolution::Full) const;
+ };
+ 
+ std::ostream & operator << (std::ostream & str, const SourcePath & path);
+diff --git a/tests/functional/lang/eval-okay-pathexists.nix b/tests/functional/lang/eval-okay-pathexists.nix
+index 31697f66a..022b22fea 100644
+--- a/tests/functional/lang/eval-okay-pathexists.nix
++++ b/tests/functional/lang/eval-okay-pathexists.nix
+@@ -29,3 +29,6 @@ builtins.pathExists (./lib.nix)
+ && builtins.pathExists (builtins.toPath { outPath = builtins.toString ./lib.nix; })
+ && builtins.pathExists ./lib.nix
+ && !builtins.pathExists ./bla.nix
++&& builtins.pathExists ./symlink-resolution/foo/overlays/overlay.nix
++&& builtins.pathExists ./symlink-resolution/broken
++&& builtins.pathExists (builtins.toString ./symlink-resolution/foo/overlays + "/.")
+diff --git a/tests/functional/lang/symlink-resolution/broken b/tests/functional/lang/symlink-resolution/broken
+new file mode 120000
+index 000000000..e07da690b
+--- /dev/null
++++ b/tests/functional/lang/symlink-resolution/broken
+@@ -0,0 +1 @@
++nonexistent
+\ No newline at end of file

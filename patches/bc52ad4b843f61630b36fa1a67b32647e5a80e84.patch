@@ -1,0 +1,24 @@
+commit bc52ad4b843f61630b36fa1a67b32647e5a80e84
+Author: Domen Kožar <domen@dev.si>
+Date:   Fri Feb 16 08:09:53 2024 +0000
+
+    remove boehm patch since it's in nixpkgs
+
+diff --git a/flake.nix b/flake.nix
+index 62600d760..376df2a8e 100644
+--- a/flake.nix
++++ b/flake.nix
+@@ -158,13 +158,6 @@
+ 
+           boehmgc-nix = (final.boehmgc.override {
+             enableLargeConfig = true;
+-          }).overrideAttrs(o: {
+-            patches = (o.patches or []) ++ [
+-              ./dep-patches/boehmgc-coroutine-sp-fallback.diff
+-
+-              # https://github.com/ivmai/bdwgc/pull/586
+-              ./dep-patches/boehmgc-traceable_allocator-public.diff
+-            ];
+           });
+ 
+           changelog-d-nix = final.buildPackages.callPackage ./misc/changelog-d.nix { };

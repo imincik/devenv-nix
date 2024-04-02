@@ -1,0 +1,208 @@
+commit b3b88ca5f67fcf40be9858793a5216c35664714d
+Author: Théophane Hufschmitt <theophane.hufschmitt@tweag.io>
+Date:   Thu Feb 29 21:02:08 2024 +0100
+
+    Allow garbage-collecting whithin a closure
+    
+    Make `nix store gc` accept installable arguments. If these are provided,
+    then the gc will only happen within the closure of these installables
+    and ignore any path outside, even if it's dead.
+    
+    `nix store gc foo` is morally equivalent to
+    
+    ```bash
+    for validPath in $(nix path-info --recursive foo); do
+      nix store delete "$validPath" || true
+    done
+    ```
+
+diff --git a/src/libcmd/command.hh b/src/libcmd/command.hh
+index 4a72627ed..084a66d4a 100644
+--- a/src/libcmd/command.hh
++++ b/src/libcmd/command.hh
+@@ -169,7 +169,6 @@ struct RawInstallablesCommand : virtual Args, SourceExprCommand
+ 
+     void run(ref<Store> store) override;
+ 
+-    // FIXME make const after `CmdRepl`'s override is fixed up
+     virtual void applyDefaultInstallables(std::vector<std::string> & rawInstallables);
+ 
+     bool readFromStdIn = false;
+diff --git a/src/libstore/gc-store.hh b/src/libstore/gc-store.hh
+index ab1059fb1..585180366 100644
+--- a/src/libstore/gc-store.hh
++++ b/src/libstore/gc-store.hh
+@@ -23,8 +23,8 @@ struct GCOptions
+      *
+      * - `gcDeleteDead`: actually delete the latter set.
+      *
+-     * - `gcDeleteSpecific`: delete the paths listed in
+-     *    `pathsToDelete`, insofar as they are not reachable.
++     * - `gcDeleteSpecific`: delete all the paths, and fail if one of them
++     *   isn't dead.
+      */
+     typedef enum {
+         gcReturnLive,
+@@ -44,7 +44,8 @@ struct GCOptions
+     bool ignoreLiveness{false};
+ 
+     /**
+-     * For `gcDeleteSpecific`, the paths to delete.
++     * The paths from which to delete.
++     * If empty, and `action` is not `gcDeleteSpecific`, act on the whole store.
+      */
+     StorePathSet pathsToDelete;
+ 
+diff --git a/src/libstore/gc.cc b/src/libstore/gc.cc
+index cb820e2d5..51726fa00 100644
+--- a/src/libstore/gc.cc
++++ b/src/libstore/gc.cc
+@@ -475,6 +475,14 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
+     bool gcKeepOutputs = settings.gcKeepOutputs;
+     bool gcKeepDerivations = settings.gcKeepDerivations;
+ 
++    if (options.action == GCOptions::gcDeleteSpecific && options.pathsToDelete.empty()) {
++        // This violates the convention that an empty `pathsToDelete` corresponds
++        // to the whole store, but deleting the whole store doesn't make sense,
++        // and `nix-store --delete` is a valid command that deletes nothing, so
++        // we need to keep it as-it-is.
++        return;
++    }
++
+     StorePathSet roots, dead, alive;
+ 
+     struct Shared
+@@ -732,7 +740,7 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
+                 return markAlive();
+             }
+ 
+-            if (options.action == GCOptions::gcDeleteSpecific
++            if (!options.pathsToDelete.empty()
+                 && !options.pathsToDelete.count(*path))
+                 return;
+ 
+@@ -790,11 +798,13 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
+ 
+     /* Either delete all garbage paths, or just the specified
+        paths (for gcDeleteSpecific). */
+-    if (options.action == GCOptions::gcDeleteSpecific) {
++    if (!options.pathsToDelete.empty()) {
+ 
+         for (auto & i : options.pathsToDelete) {
+-            deleteReferrersClosure(i);
+-            if (!dead.count(i))
++            if (shouldDelete) {
++                deleteReferrersClosure(i);
++            }
++            if (options.action == GCOptions::gcDeleteSpecific && !dead.count(i))
+                 throw Error(
+                     "Cannot delete path '%1%' since it is still alive. "
+                     "To find out why, use: "
+diff --git a/src/nix/store-gc.cc b/src/nix/store-gc.cc
+index 8b9b5d164..283471994 100644
+--- a/src/nix/store-gc.cc
++++ b/src/nix/store-gc.cc
+@@ -7,7 +7,7 @@
+ 
+ using namespace nix;
+ 
+-struct CmdStoreGC : StoreCommand, MixDryRun
++struct CmdStoreGC : InstallablesCommand, MixDryRun
+ {
+     GCOptions options;
+ 
+@@ -33,11 +33,31 @@ struct CmdStoreGC : StoreCommand, MixDryRun
+           ;
+     }
+ 
+-    void run(ref<Store> store) override
++    // Don't add a default installable if none is specified so that
++    // `nix store gc` runs a full gc
++    void applyDefaultInstallables(std::vector<std::string> & rawInstallables) override {
++    }
++
++    void run(ref<Store> store, Installables && installables) override
+     {
+         auto & gcStore = require<GcStore>(*store);
+ 
+         options.action = dryRun ? GCOptions::gcReturnDead : GCOptions::gcDeleteDead;
++
++        // Add the closure of the installables to the set of paths to delete.
++        // If there's no installable specified, this will leave an empty set
++        // of paths to delete, which means the whole store will be gc-ed.
++        StorePathSet closureRoots;
++        for (auto & i : installables) {
++            try {
++                auto installableOutPath = Installable::toStorePath(getEvalStore(), store, Realise::Derivation, OperateOn::Output, i);
++                if (store->isValidPath(installableOutPath)) {
++                    closureRoots.insert(installableOutPath);
++                }
++            } catch (MissingRealisation &) {
++            }
++        }
++        store->computeFSClosure(closureRoots, options.pathsToDelete);
+         GCResults results;
+         PrintFreed freed(options.action == GCOptions::gcDeleteDead, results);
+         gcStore.collectGarbage(options, results);
+diff --git a/src/nix/store-gc.md b/src/nix/store-gc.md
+index 956b3c872..e0957f929 100644
+--- a/src/nix/store-gc.md
++++ b/src/nix/store-gc.md
+@@ -14,8 +14,17 @@ R""(
+   # nix store gc --max 1G
+   ```
+ 
++* Delete the unreachable paths in the closure of the current development shell
++
++  ```console
++  # nix store gc .#devShells.default
++  ```
++
+ # Description
+ 
+-This command deletes unreachable paths in the Nix store.
++This command deletes unreachable paths from the Nix store.
++
++If called with no argument, it will delete all the unreachable paths from the store.
++If called with an installable argument, it will delete the unreachable paths whithin the closure of that argument.
+ 
+ )""
+diff --git a/tests/functional/gc-closure.sh b/tests/functional/gc-closure.sh
+new file mode 100644
+index 000000000..e392cad14
+--- /dev/null
++++ b/tests/functional/gc-closure.sh
+@@ -0,0 +1,21 @@
++source common.sh
++
++nix_gc_closure() {
++    clearStore
++    nix build -f dependencies.nix input0_drv --out-link $TEST_ROOT/gc-root
++    input0=$(realpath $TEST_ROOT/gc-root)
++    input1=$(nix build -f dependencies.nix input1_drv --no-link --print-out-paths)
++    input2=$(nix build -f dependencies.nix input2_drv --no-link --print-out-paths)
++    top=$(nix build -f dependencies.nix --no-link --print-out-paths)
++    somthing_else=$(nix store add-path ./dependencies.nix)
++
++    # Check that nix store gc is best-effort (doesn't fail when some paths in the closure are alive)
++    nix store gc "$top"
++    [[ ! -e "$top" ]] || fail "top should have been deleted"
++    [[ -e "$input0" ]] || fail "input0 is a gc root, shouldn't have been deleted"
++    [[ ! -e "$input2" ]] || fail "input2 is not a gc root and is part of top's closure, it should have been deleted"
++    [[ -e "$input1" ]] || fail "input1 is not ins the closure of top, it shouldn't have been deleted"
++    [[ -e "$somthing_else" ]] || fail "somthing_else is not in the closure of top, it shouldn't have been deleted"
++}
++
++nix_gc_closure
+diff --git a/tests/functional/local.mk b/tests/functional/local.mk
+index a6d445291..f82f4261c 100644
+--- a/tests/functional/local.mk
++++ b/tests/functional/local.mk
+@@ -53,6 +53,7 @@ nix_tests = \
+   hash-convert.sh \
+   hash-path.sh \
+   gc-non-blocking.sh \
++  gc-closure.sh \
+   check.sh \
+   nix-shell.sh \
+   check-refs.sh \

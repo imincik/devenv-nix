@@ -1,0 +1,20 @@
+commit d447ad83211f86deefa1a3d7c1f6ad02433f1570
+Author: Domen Kožar <domen@dev.si>
+Date:   Wed Oct 26 10:55:14 2022 +0100
+
+    remove language restrictions on flakes
+
+diff --git a/src/libexpr/flake/flake.cc b/src/libexpr/flake/flake.cc
+index 2b9e4d871..637d640a1 100644
+--- a/src/libexpr/flake/flake.cc
++++ b/src/libexpr/flake/flake.cc
+@@ -20,8 +20,7 @@ namespace flake {
+ 
+ static void forceTrivialValue(EvalState & state, Value & value, const PosIdx pos)
+ {
+-    if (value.isThunk() && value.isTrivial())
+-        state.forceValue(value, pos);
++    state.forceValue(value, pos);
+ }
+ 
+ static void expectType(EvalState & state, ValueType type,

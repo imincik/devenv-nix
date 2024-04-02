@@ -1,0 +1,63 @@
+commit 10d5a3af9694a0d54d75e4450f95c8f6eb3f5e95
+Author: Théophane Hufschmitt <theophane.hufschmitt@tweag.io>
+Date:   Tue Feb 13 08:28:02 2024 +0100
+
+    Copy the output of fixed-output derivations before registering them
+    
+    It is possible to exfiltrate a file descriptor out of the build sandbox
+    of FODs, and use it to modify the store path after it has been
+    registered.
+    To avoid that issue, don't register the output of the build, but a copy
+    of it (that will be free of any leaked file descriptor).
+
+diff --git a/src/libstore/build/local-derivation-goal.cc b/src/libstore/build/local-derivation-goal.cc
+index b373c74b2..7dffcc337 100644
+--- a/src/libstore/build/local-derivation-goal.cc
++++ b/src/libstore/build/local-derivation-goal.cc
+@@ -2528,6 +2528,12 @@ SingleDrvOutputs LocalDerivationGoal::registerOutputs()
+             [&](const DerivationOutput::CAFixed & dof) {
+                 auto & wanted = dof.ca.hash;
+ 
++                // Replace the output by a fresh copy of itself to make sure
++                // that there's no stale file descriptor pointing to it
++                Path tmpOutput = actualPath + ".tmp";
++                copyFile(actualPath, tmpOutput, true);
++                renameFile(tmpOutput, actualPath);
++
+                 auto newInfo0 = newInfoFromCA(DerivationOutput::CAFloating {
+                     .method = dof.ca.method,
+                     .hashAlgo = wanted.algo,
+diff --git a/src/libutil/file-system.cc b/src/libutil/file-system.cc
+index 9fa1f62df..218980c2a 100644
+--- a/src/libutil/file-system.cc
++++ b/src/libutil/file-system.cc
+@@ -628,6 +628,11 @@ void copy(const fs::directory_entry & from, const fs::path & to, bool andDelete)
+     }
+ }
+ 
++void copyFile(const Path & oldPath, const Path & newPath, bool andDelete)
++{
++    return copy(fs::directory_entry(fs::path(oldPath)), fs::path(newPath), andDelete);
++}
++
+ void renameFile(const Path & oldName, const Path & newName)
+ {
+     fs::rename(oldName, newName);
+diff --git a/src/libutil/file-system.hh b/src/libutil/file-system.hh
+index 464efc242..963265e34 100644
+--- a/src/libutil/file-system.hh
++++ b/src/libutil/file-system.hh
+@@ -186,6 +186,13 @@ void renameFile(const Path & src, const Path & dst);
+  */
+ void moveFile(const Path & src, const Path & dst);
+ 
++/**
++ * Recursively copy the content of `oldPath` to `newPath`. If `andDelete` is
++ * `true`, then also remove `oldPath` (making this equivalent to `moveFile`, but
++ * with the guaranty that the destination will be “fresh”, with no stale inode
++ * or file descriptor pointing to it).
++ */
++void copyFile(const Path & oldPath, const Path & newPath, bool andDelete);
+ 
+ /**
+  * Automatic cleanup of resources.

@@ -1,0 +1,19 @@
+commit d250aad325d4060a6bf6d24f613f4a9b2d8419f9
+Author: Domen Kožar <domen@dev.si>
+Date:   Fri Feb 16 18:08:37 2024 +0000
+
+    specialize to devenv
+
+diff --git a/package.nix b/package.nix
+index 47e6eb0d3..2bee869f1 100644
+--- a/package.nix
++++ b/package.nix
+@@ -45,7 +45,7 @@
+ # work. The top-level flake.nix will choose useful combinations of these
+ # options to CI.
+ 
+-, pname ? "nix"
++, pname ? "nix-devenv"
+ 
+ , versionSuffix ? ""
+ , officialRelease ? false

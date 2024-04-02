@@ -1,0 +1,19 @@
+commit e92c1fb8a57fe2e0bee725b1e7c68cfd8ffd55dc
+Author: Domen Kožar <domen@dev.si>
+Date:   Sat Mar 9 05:47:21 2024 +0000
+
+    enable git submodules by default
+
+diff --git a/src/libexpr/primops/fetchTree.cc b/src/libexpr/primops/fetchTree.cc
+index ed60b2e38..51d9fbffb 100644
+--- a/src/libexpr/primops/fetchTree.cc
++++ b/src/libexpr/primops/fetchTree.cc
+@@ -36,7 +36,7 @@ static void emitTreeAttrs(
+ 
+     if (input.getType() == "git")
+         attrs.alloc("submodules").mkBool(
+-            fetchers::maybeGetBoolAttr(input.attrs, "submodules").value_or(false));
++            fetchers::maybeGetBoolAttr(input.attrs, "submodules").value_or(true));
+ 
+     if (!forceDirty) {
+ 

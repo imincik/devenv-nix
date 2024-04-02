@@ -1,0 +1,25 @@
+commit d61bd1c0dda0ec7466079531547bbafdf538ed71
+Author: Domen Kožar <domen@dev.si>
+Date:   Mon Mar 4 00:43:28 2024 +0000
+
+    include all paths that start with .env*
+
+diff --git a/src/libfetchers/git-utils.cc b/src/libfetchers/git-utils.cc
+index 464853a5b..dacac38e8 100644
+--- a/src/libfetchers/git-utils.cc
++++ b/src/libfetchers/git-utils.cc
+@@ -315,9 +315,11 @@ struct GitRepoImpl : GitRepo, std::enable_shared_from_this<GitRepoImpl>
+         if (pathExists(cwd / "devenv.local.nix")) {
+             info.files.insert(CanonPath((cwd / "devenv.local.nix").string()).removePrefix(CanonPath(path.string())).rel());
+         }
+-        // begins with .env
+-        if (pathExists(cwd / ".env")) {
+-            info.files.insert(CanonPath((cwd / ".env").string()).removePrefix(CanonPath(path.string())).rel());
++        // find all files that begin with .env
++        for (const auto & entry : fs::directory_iterator(cwd)) {
++            if (entry.path().filename().string().find(".env") == 0) {
++                info.files.insert(CanonPath(entry.path().string()).removePrefix(CanonPath(path.string())).rel());
++            }
+         }
+ 
+         return info;

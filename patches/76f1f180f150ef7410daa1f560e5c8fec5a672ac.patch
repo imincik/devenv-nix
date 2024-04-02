@@ -1,0 +1,31 @@
+commit 76f1f180f150ef7410daa1f560e5c8fec5a672ac
+Author: Domen Kožar <domen@dev.si>
+Date:   Mon Aug 21 15:12:10 2023 +0100
+
+    properly include .devenv.flake.nix from subdirectories
+
+diff --git a/src/libfetchers/git-utils.cc b/src/libfetchers/git-utils.cc
+index 56c1f2c5a..0d564bb85 100644
+--- a/src/libfetchers/git-utils.cc
++++ b/src/libfetchers/git-utils.cc
+@@ -303,15 +303,12 @@ struct GitRepoImpl : GitRepo, std::enable_shared_from_this<GitRepoImpl>
+             info.submodules = parseSubmodules(modulesFile);
+ 
+         // Usually ignored, so add it manually
+-        if (pathExists(".devenv.flake.nix")) {
+-            info.files.insert(CanonPath(".devenv.flake.nix"));
+-        }
+-        if (pathExists(".devenv/flake.json")) {
+-            info.files.insert(CanonPath(".devenv/flake.json"));
+-        }
+-        if (pathExists(".devenv/devenv.json")) {
+-            info.files.insert(CanonPath(".devenv/devenv.json"));
++        if (pathExists(CanonPath::fromCwd(".devenv.flake.nix").abs())) {
++            info.files.insert(CanonPath::fromCwd(".devenv.flake.nix").removePrefix(path).rel());
++            info.files.insert(CanonPath::fromCwd(".devenv/flake.json").removePrefix(path).rel());
++            info.files.insert(CanonPath::fromCwd(".devenv/devenv.json").removePrefix(path).rel());
+         }
++
+         return info;
+     }
+ 

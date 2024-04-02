@@ -1,0 +1,19 @@
+commit 07a4ed080acccd2839624c3e7ef073131736d0bf
+Author: Domen Kožar <domen@dev.si>
+Date:   Thu Feb 29 05:32:28 2024 +0000
+
+    curl: don't pull in Python
+
+diff --git a/package.nix b/package.nix
+index 2bee869f1..af0c32b81 100644
+--- a/package.nix
++++ b/package.nix
+@@ -219,7 +219,7 @@ in {
+     boost
+     brotli
+     bzip2
+-    curl
++    (curl.override { pslSupport = false; })
+     libarchive
+     libgit2
+     libsodium

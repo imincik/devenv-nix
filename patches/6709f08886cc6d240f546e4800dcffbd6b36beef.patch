@@ -1,0 +1,139 @@
+commit 6709f08886cc6d240f546e4800dcffbd6b36beef
+Author: Eelco Dolstra <edolstra@gmail.com>
+Date:   Tue Feb 20 11:40:02 2024 +0100
+
+    Support empty Git repositories / workdirs
+    
+    Fixes #10039.
+    
+    (cherry picked from commit 9e762454cf62d0d7a6259b560cc3e340f6f5ec6e)
+
+diff --git a/src/libfetchers/git-utils.cc b/src/libfetchers/git-utils.cc
+index 44c629b69..170deb370 100644
+--- a/src/libfetchers/git-utils.cc
++++ b/src/libfetchers/git-utils.cc
+@@ -2,6 +2,7 @@
+ #include "fs-input-accessor.hh"
+ #include "input-accessor.hh"
+ #include "filtering-input-accessor.hh"
++#include "memory-input-accessor.hh"
+ #include "cache.hh"
+ #include "finally.hh"
+ #include "processes.hh"
+@@ -988,17 +989,21 @@ ref<InputAccessor> GitRepoImpl::getAccessor(const Hash & rev, bool exportIgnore)
+ ref<InputAccessor> GitRepoImpl::getAccessor(const WorkdirInfo & wd, bool exportIgnore, MakeNotAllowedError makeNotAllowedError)
+ {
+     auto self = ref<GitRepoImpl>(shared_from_this());
++    /* In case of an empty workdir, return an empty in-memory tree. We
++       cannot use AllowListInputAccessor because it would return an
++       error for the root (and we can't add the root to the allow-list
++       since that would allow access to all its children). */
+     ref<InputAccessor> fileAccessor =
+-        AllowListInputAccessor::create(
+-                makeFSInputAccessor(path),
+-                std::set<CanonPath> { wd.files },
+-                std::move(makeNotAllowedError));
+-    if (exportIgnore) {
++        wd.files.empty()
++        ? makeEmptyInputAccessor()
++        : AllowListInputAccessor::create(
++            makeFSInputAccessor(path),
++            std::set<CanonPath> { wd.files },
++            std::move(makeNotAllowedError)).cast<InputAccessor>();
++    if (exportIgnore)
+         return make_ref<GitExportIgnoreInputAccessor>(self, fileAccessor, std::nullopt);
+-    }
+-    else {
++    else
+         return fileAccessor;
+-    }
+ }
+ 
+ ref<GitFileSystemObjectSink> GitRepoImpl::getFileSystemObjectSink()
+diff --git a/src/libfetchers/git.cc b/src/libfetchers/git.cc
+index df90b01a6..26da9c3ae 100644
+--- a/src/libfetchers/git.cc
++++ b/src/libfetchers/git.cc
+@@ -158,6 +158,8 @@ std::vector<PublicKey> getPublicKeys(const Attrs & attrs)
+ 
+ }  // end namespace
+ 
++static const Hash nullRev{HashAlgorithm::SHA1};
++
+ struct GitInputScheme : InputScheme
+ {
+     std::optional<Input> inputFromURL(const ParsedURL & url, bool requireTree) const override
+@@ -701,10 +703,12 @@ struct GitInputScheme : InputScheme
+             if (auto ref = repo->getWorkdirRef())
+                 input.attrs.insert_or_assign("ref", *ref);
+ 
+-            auto rev = repoInfo.workdirInfo.headRev.value();
++            /* Return a rev of 000... if there are no commits yet. */
++            auto rev = repoInfo.workdirInfo.headRev.value_or(nullRev);
+ 
+             input.attrs.insert_or_assign("rev", rev.gitRev());
+-            input.attrs.insert_or_assign("revCount", getRevCount(repoInfo, repoInfo.url, rev));
++            input.attrs.insert_or_assign("revCount",
++                rev == nullRev ? 0 : getRevCount(repoInfo, repoInfo.url, rev));
+ 
+             verifyCommit(input, repo);
+         } else {
+diff --git a/src/libfetchers/memory-input-accessor.cc b/src/libfetchers/memory-input-accessor.cc
+index 88a2e34e8..34a801f67 100644
+--- a/src/libfetchers/memory-input-accessor.cc
++++ b/src/libfetchers/memory-input-accessor.cc
+@@ -20,4 +20,10 @@ ref<MemoryInputAccessor> makeMemoryInputAccessor()
+     return make_ref<MemoryInputAccessorImpl>();
+ }
+ 
++ref<InputAccessor> makeEmptyInputAccessor()
++{
++    static auto empty = makeMemoryInputAccessor().cast<InputAccessor>();
++    return empty;
++}
++
+ }
+diff --git a/src/libfetchers/memory-input-accessor.hh b/src/libfetchers/memory-input-accessor.hh
+index 508b07722..63afadd2a 100644
+--- a/src/libfetchers/memory-input-accessor.hh
++++ b/src/libfetchers/memory-input-accessor.hh
+@@ -13,4 +13,6 @@ struct MemoryInputAccessor : InputAccessor
+ 
+ ref<MemoryInputAccessor> makeMemoryInputAccessor();
+ 
++ref<InputAccessor> makeEmptyInputAccessor();
++
+ }
+diff --git a/tests/functional/fetchGit.sh b/tests/functional/fetchGit.sh
+index 09e606f7e..4ca8876e8 100644
+--- a/tests/functional/fetchGit.sh
++++ b/tests/functional/fetchGit.sh
+@@ -268,3 +268,28 @@ git -C "$repo" add hello .gitignore
+ git -C "$repo" commit -m 'Bla1'
+ cd "$repo"
+ path11=$(nix eval --impure --raw --expr "(builtins.fetchGit ./.).outPath")
++
++# Test a workdir with no commits.
++empty="$TEST_ROOT/empty"
++git init "$empty"
++
++emptyAttrs='{ lastModified = 0; lastModifiedDate = "19700101000000"; narHash = "sha256-pQpattmS9VmO3ZIQUFn66az8GSmB4IvYhTTCFn6SUmo="; rev = "0000000000000000000000000000000000000000"; revCount = 0; shortRev = "0000000"; submodules = false; }'
++
++[[ $(nix eval --impure --expr "builtins.removeAttrs (builtins.fetchGit $empty) [\"outPath\"]") = $emptyAttrs ]]
++
++echo foo > "$empty/x"
++
++[[ $(nix eval --impure --expr "builtins.removeAttrs (builtins.fetchGit $empty) [\"outPath\"]") = $emptyAttrs ]]
++
++git -C "$empty" add x
++
++[[ $(nix eval --impure --expr "builtins.removeAttrs (builtins.fetchGit $empty) [\"outPath\"]") = '{ lastModified = 0; lastModifiedDate = "19700101000000"; narHash = "sha256-wzlAGjxKxpaWdqVhlq55q5Gxo4Bf860+kLeEa/v02As="; rev = "0000000000000000000000000000000000000000"; revCount = 0; shortRev = "0000000"; submodules = false; }' ]]
++
++# Test a repo with an empty commit.
++git -C "$empty" rm -f x
++
++git -C "$empty" config user.email "foobar@example.com"
++git -C "$empty" config user.name "Foobar"
++git -C "$empty" commit --allow-empty --allow-empty-message --message ""
++
++nix eval --impure --expr "let attrs = builtins.fetchGit $empty; in assert attrs.lastModified != 0; assert attrs.rev != \"0000000000000000000000000000000000000000\"; assert attrs.revCount == 1; true"
